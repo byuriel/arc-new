@@ -341,9 +341,14 @@ function parseStockData(data) {
 }
 
 // FIX: Improved stock checking with correct URL construction
-async function checkVariantStock(variantId) {
+async function checkVariantStock(variantId, variantInfo) {
   try {
-    // Use the extracted product ID instead of hardcoded one
+    // If we already know availability from API, use that
+    if (typeof variantInfo.available === 'boolean') {
+      return variantInfo.available;
+    }
+
+    // Otherwise check the product page for this variant
     if (!productId) {
       console.error('⚠️ Product ID not set!');
       return null;
