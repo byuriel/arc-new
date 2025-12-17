@@ -1,9 +1,4 @@
-// Arc'teryx Stock Monitor - FIXED VERSION
-// Key fixes:
-// 1. Extract actual product ID from page data
-// 2. Properly construct variant URLs
-// 3. Better stock detection logic
-
+// Arc'teryx Stock Monitor - COMPLETE FIXED VERSION
 const axios = require('axios');
 const cheerio = require('cheerio');
 
@@ -24,7 +19,7 @@ let checkCount = 0;
 let allKnownColors = new Map();
 let discordClient = null;
 let lastCheckTime = null;
-let productId = null; // FIX: Store the actual product ID
+let productId = null;
 let monitorStats = {
   totalChecks: 0,
   totalRestocks: 0,
@@ -340,7 +335,6 @@ function parseStockData(data) {
   return stockData;
 }
 
-// FIX: Improved stock checking with correct URL construction
 async function checkVariantStock(variantId, variantInfo) {
   try {
     // If we already know availability from API, use that
@@ -367,19 +361,16 @@ async function checkVariantStock(variantId, variantInfo) {
     
     const $ = cheerio.load(response.data);
     
-    // Multiple ways to detect stock status
     const notifyMeButton = $('button:contains("Notify me"), button:contains("Notify Me")').length > 0;
     const addToCartButton = $('button:contains("Add to"), button:contains("Shop now"), button[data-testid*="add-to"]').length > 0;
     const outOfStockText = $('*:contains("Out of stock")').length > 0;
     
-    // Try to find stock info in the page data
     const nextDataScript = $('#__NEXT_DATA__').html();
     if (nextDataScript) {
       try {
         const nextData = JSON.parse(nextDataScript);
         const product = nextData?.props?.pageProps?.product;
         
-        // Check if this specific variant is available
         if (product?.variants) {
           const variant = product.variants.find(v => v.id === variantId || v.variationValues?.color === variantId);
           if (variant && variant.hasOwnProperty('available')) {
@@ -388,7 +379,6 @@ async function checkVariantStock(variantId, variantInfo) {
           }
         }
         
-        // Check ATC (Add To Cart) status
         if (product?.ATC === false || product?.available === false) {
           return false;
         }
@@ -397,7 +387,6 @@ async function checkVariantStock(variantId, variantInfo) {
       }
     }
     
-    // Fallback to button detection
     if (outOfStockText || notifyMeButton) {
       return false;
     }
@@ -405,7 +394,7 @@ async function checkVariantStock(variantId, variantInfo) {
       return true;
     }
     
-    return null; // Unknown status
+    return null;
   } catch (error) {
     console.error(`    Error checking variant ${variantId}:`, error.message);
     return null;
@@ -424,7 +413,7 @@ async function checkAllVariantStocks() {
   for (const [variantId, variantInfo] of allKnownColors.entries()) {
     console.log(`  Checking ${variantInfo.label}...`);
     
-    const isAvailable = await checkVariantStock(variantId);
+    const isAvailable = await checkVariantStock(variantId, variantInfo);
     
     if (isAvailable === true) {
       stockData.inStock.push(variantInfo);
@@ -437,7 +426,6 @@ async function checkAllVariantStocks() {
       console.log(`    ❓ UNKNOWN`);
     }
     
-    // Delay between requests to avoid rate limiting
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
 
@@ -469,8 +457,8 @@ async function checkStock() {
   console.log(`${'='.repeat(70)}`);
 
   try {
-    const html = await fetchProductPage();
-    const pageData = parseStockData(html);
+    const data = await fetchProductData();
+    const pageData = parseStockData(data);
 
     console.log(`\n📦 Product: ${pageData.productName}`);
     console.log(`🎨 Total Color Variants: ${allKnownColors.size}`);
@@ -504,10 +492,8 @@ async function checkStock() {
       console.log(`\nℹ️  No new restocks detected`);
     }
 
-    if (checkCount % 12 === 0) {
-      console.log(`\n📊 Sending periodic snapshot...`);
-      await sendInventorySnapshot(currentStock.inStock, currentStock.outOfStock);
-    }
+    // Only send periodic snapshots if explicitly enabled
+    // Removed automatic snapshots - only alerts on restocks now
 
     previousStock = currentStock;
     lastCheckTime = new Date();
@@ -580,10 +566,6 @@ async function main() {
   }
 
   await setupDiscordBot();
-
-  const commandsInfo = CONFIG.ENABLE_COMMANDS 
-    ? '\n\n💬 Commands enabled! Type `!help`'
-    : '\n\n💡 Enable commands with ENABLE_COMMANDS=true';
 
   // Startup notification removed - only send restock alerts
 
