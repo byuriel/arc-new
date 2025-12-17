@@ -164,8 +164,60 @@ async function handleSnapshotCommand() {
 }
 
 // ===== STOCK CHECKING FUNCTIONS =====
-async function fetchProductPage() {
+async function fetchProductData() {
   try {
+    // Try API endpoint first
+    const apiUrl = 'https://arcteryx.com/api/graphql';
+    const query = {
+      operationName: 'Product',
+      variables: {
+        slug: 'bird-head-toque',
+        locale: 'en-US'
+      },
+      query: `query Product($slug: String!, $locale: String!) {
+        product(slug: $slug, locale: $locale) {
+          id
+          name
+          analyticsName
+          variants {
+            id
+            color
+            available
+            label
+          }
+          colourOptions {
+            options {
+              value
+              label
+              primaryColour
+              hexCode
+              available
+            }
+          }
+        }
+      }`
+    };
+
+    console.log('Trying GraphQL API...');
+    const apiResponse = await axios.post(apiUrl, query, {
+      headers: {
+        'User-Agent': CONFIG.USER_AGENT,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      timeout: 30000
+    });
+
+    if (apiResponse.data?.data?.product) {
+      console.log('✅ Got data from GraphQL API');
+      return apiResponse.data.data.product;
+    }
+
+    throw new Error('GraphQL API returned no product data');
+  } catch (apiError) {
+    console.log('GraphQL failed, trying HTML scraping:', apiError.message);
+    
+    // Fallback to HTML scraping
     const response = await axios.get(CONFIG.PRODUCT_URL, {
       headers: {
         'User-Agent': CONFIG.USER_AGENT,
@@ -175,14 +227,12 @@ async function fetchProductPage() {
       },
       timeout: 30000
     });
+    
     return response.data;
-  } catch (error) {
-    throw new Error(`Failed to fetch page: ${error.message}`);
   }
 }
 
-function parseStockData(html) {
-  const $ = cheerio.load(html);
+function parseStockData(data) {
   const stockData = {
     inStock: [],
     outOfStock: [],
@@ -191,10 +241,62 @@ function parseStockData(html) {
   };
 
   try {
-    const nextDataScript = $('#__NEXT_DATA__').html();
+    // Check if data is already a product object (from API)
+    if (data && typeof data === 'object' && !data.includes) {
+      console.log('Parsing API response...');
+      const product = data;
+      
+      productId = product.id || 'X000006756';
+      stockData.productName = product.analyticsName || product.name || 'Bird Head Toque';
+      
+      const colorOptions = product.colourOptions?.options || product.variants || [];
+      
+      console.log(`📦 Found ${colorOptions.length} color variants in API data`);
+
+      colorOptions.forEach(option => {
+        const variantInfo = {
+          variantId: option.value || option.id || option.color,
+          label: option.label || option.color,
+          primaryColour: option.primaryColour || option.color,
+          hexCode: option.hexCode,
+          available: option.available,
+          badges: option.badges || [],
+        };
+
+        allKnownColors.set(variantInfo.variantId, variantInfo);
+        stockData.allVariants.push(variantInfo);
+        
+        // If API provides availability, sort immediately
+        if (typeof option.available === 'boolean') {
+          if (option.available) {
+            stockData.inStock.push(variantInfo);
+          } else {
+            stockData.outOfStock.push(variantInfo);
+          }
+        }
+      });
+
+      return stockData;
+    }
+
+    // Otherwise try HTML parsing
+    console.log('Parsing HTML response...');
+    const $ = cheerio.load(data);
+    
+    let nextDataScript = $('#__NEXT_DATA__').html();
     
     if (!nextDataScript) {
-      throw new Error('Could not find __NEXT_DATA__ script tag');
+      $('script[type="application/json"]').each((i, elem) => {
+        const content = $(elem).html();
+        if (content && content.includes('pageProps')) {
+          nextDataScript = content;
+        }
+      });
+    }
+    
+    if (!nextDataScript) {
+      console.error('Could not find __NEXT_DATA__ - HTML length:', data.length);
+      throw new Error('Could not find product data in HTML');
     }
 
     const nextData = JSON.parse(nextDataScript);
@@ -204,28 +306,27 @@ function parseStockData(html) {
       throw new Error('Product data not found in __NEXT_DATA__');
     }
 
-    // FIX: Extract the actual product ID
-    productId = product.id || product.productId || product.masterProductId;
-    console.log(`📦 Product ID extracted: ${productId}`);
-
+    productId = product.id || product.productId || product.masterProductId || 'X000006756';
     stockData.productName = product.analyticsName || product.name || 'Bird Head Toque';
     
-    const colorOptions = product.colourOptions?.options || [];
+    const colorOptions = product.colourOptions?.options || 
+                        product.colorOptions?.options ||
+                        product.variations?.color?.values ||
+                        [];
     
-    console.log(`\n📦 Found ${colorOptions.length} color variants in product data`);
+    console.log(`📦 Found ${colorOptions.length} color variants in HTML data`);
 
     colorOptions.forEach(option => {
       const variantInfo = {
-        variantId: option.value,
-        label: option.label,
-        primaryColour: option.primaryColour,
+        variantId: option.value || option.id,
+        label: option.label || option.displayValue,
+        primaryColour: option.primaryColour || option.color,
         hexCode: option.hexCode,
-        hexValueSecondary: option.hexValueSecondary,
         badges: option.badges || [],
         imageUrl: option.image?.url
       };
 
-      allKnownColors.set(option.value, variantInfo);
+      allKnownColors.set(variantInfo.variantId, variantInfo);
       stockData.allVariants.push(variantInfo);
     });
 
