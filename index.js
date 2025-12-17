@@ -479,12 +479,7 @@ async function main() {
     ? '\n\n💬 Commands enabled! Type `!help`'
     : '\n\n💡 Enable commands with ENABLE_COMMANDS=true';
 
-  await sendDiscordNotification(
-    '🟢 Stock Monitor Started',
-    `Monitoring **Bird Head Toque** - All color variants!\n\nCheck interval: ${CONFIG.CHECK_INTERVAL} min\n[View Product](${CONFIG.PRODUCT_URL})${commandsInfo}`,
-    5763719,
-    []
-  );
+  // Startup notification removed - only send restock alerts
 
   console.log('🔄 Initial check...\n');
   await checkStock();
