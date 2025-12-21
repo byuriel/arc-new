@@ -152,22 +152,10 @@ async function main() {
   console.log("🏔️  ARC'TERYX BIRD HEAD TOQUE MONITOR");
   console.log('═'.repeat(50));
   console.log(`⏰ Checking every ${CONFIG.CHECK_INTERVAL} minutes`);
-  console.log(`🎨 Tracking ${TRACKED_COLORS.length} colors`);
+  console.log(`🎨 Tracking ${TRACKED_COLORS.length} colors:`);
+  TRACKED_COLORS.forEach(c => console.log(`   • ${c.label}`));
+  console.log(`🔔 Webhook: ${CONFIG.DISCORD_WEBHOOK_URL !== 'YOUR_DISCORD_WEBHOOK_URL_HERE' ? '✅ Configured' : '❌ Not set'}`);
   console.log('═'.repeat(50));
-  
-  // First check - establishes baseline
-  await checkStock();
-  
-  // TEST: Simulate a restock by pretending Orca was out of stock
-  console.log('\n🧪 TEST MODE: Simulating Orca restock...');
-  previousStockStatus.set('1820', 'OutOfStock'); // Fake that Orca was OOS
-  
-  // Second check - will detect "restock" and send alert
-  await checkStock();
-  
-  console.log('\n🧪 TEST COMPLETE - Check Discord for alert!');
-  process.exit(0);
-}
   
   // Initial check
   await checkStock();
