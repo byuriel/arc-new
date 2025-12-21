@@ -1,106 +1,75 @@
-// Arc'teryx Stock Monitor - FINAL FIXED VERSION
-// Based on actual __NEXT_DATA__ structure from arcteryx.com
-// 
-// Key data paths:
-// - Colors: product.colourOptions.options (value = colorId, label = colorName)
-// - Stock: product.variants (colourId + stockStatus)
+// Arc'teryx Stock Monitor - Bird Head Toque
+// Only alerts when tracked colors come IN STOCK
 
 const axios = require('axios');
 const cheerio = require('cheerio');
 
 // ===== CONFIGURATION =====
 const CONFIG = {
-  PRODUCT_URL: process.env.PRODUCT_URL || 'https://arcteryx.com/us/en/shop/bird-head-toque',
+  PRODUCT_URL: 'https://arcteryx.com/us/en/shop/bird-head-toque',
   DISCORD_WEBHOOK_URL: process.env.DISCORD_WEBHOOK_URL || 'YOUR_DISCORD_WEBHOOK_URL_HERE',
-  DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN || '',
-  DISCORD_CHANNEL_ID: process.env.DISCORD_CHANNEL_ID || '',
-  CHECK_INTERVAL: parseInt(process.env.CHECK_INTERVAL_MINUTES) || 5,
-  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  ENABLE_COMMANDS: process.env.ENABLE_COMMANDS === 'true'
+  CHECK_INTERVAL: 5, // minutes
+  USER_AGENT: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 };
+
+// Colors to track (excluding 24K Black)
+const TRACKED_COLORS = [
+  { colorId: '16284', label: 'Euphoria / Olive Moss' },
+  { colorId: '16305', label: 'Bliss / Arctic Silk' },
+  { colorId: '1820', label: 'Orca' },
+  { colorId: '16252', label: 'Blaze / Copper Sky' },
+  { colorId: '16262', label: 'Solitude / Arctic Silk' },
+  { colorId: '16258', label: 'Nightscape / Glacial' },
+  { colorId: '16280', label: 'Aster / Blaze' },
+  { colorId: '16238', label: 'Mars / Dynasty' }
+];
+
+const TRACKED_COLOR_IDS = new Set(TRACKED_COLORS.map(c => c.colorId));
 
 // ===== STATE =====
-let previousStock = { inStock: [], outOfStock: [] };
+let previousStockStatus = new Map(); // colorId -> "InStock" | "OutOfStock"
 let checkCount = 0;
-let monitorStats = {
-  totalChecks: 0,
-  totalRestocks: 0,
-  errors: 0,
-  startTime: new Date()
-};
 
 // ===== DISCORD =====
-async function sendDiscordNotification(title, description, color, fields = []) {
+async function sendRestockAlert(colors) {
   if (!CONFIG.DISCORD_WEBHOOK_URL || CONFIG.DISCORD_WEBHOOK_URL === 'YOUR_DISCORD_WEBHOOK_URL_HERE') {
     console.log('⚠️  Webhook not configured');
     return;
   }
   
+  const fields = colors.map(c => ({
+    name: `🟢 ${c.label}`,
+    value: `**IN STOCK NOW!**\n[BUY NOW](${CONFIG.PRODUCT_URL})`,
+    inline: true
+  }));
+
   try {
     await axios.post(CONFIG.DISCORD_WEBHOOK_URL, {
+      content: '@everyone 🚨 RESTOCK ALERT!', // Pings everyone
       embeds: [{
-        title,
-        description,
-        color,
+        title: '🎉 BIRD HEAD TOQUE RESTOCK!',
+        description: `**${colors.length}** color${colors.length > 1 ? 's' : ''} just came back in stock! GO GO GO! 🔥`,
+        color: 3066993, // Green
         fields,
         timestamp: new Date().toISOString(),
         footer: { text: "Arc'teryx Stock Monitor" }
       }]
     });
-    console.log('✅ Discord notification sent');
+    console.log('🔔 RESTOCK ALERT SENT!');
   } catch (error) {
     console.error('❌ Discord error:', error.message);
   }
 }
 
-async function sendRestockAlert(colors) {
-  const fields = colors.map(c => ({
-    name: `🟢 ${c.label}`,
-    value: `**IN STOCK!**\n[Buy Now](${CONFIG.PRODUCT_URL})`,
-    inline: true
-  }));
-
-  await sendDiscordNotification(
-    '🎉 RESTOCK ALERT - Bird Head Toque',
-    `**${colors.length}** color${colors.length > 1 ? 's' : ''} just restocked! 🔥`,
-    3066993,
-    fields
-  );
-}
-
-async function sendInventorySnapshot(inStock, outOfStock) {
-  const inStockList = inStock.length > 0
-    ? inStock.map(c => `✅ ${c.label}`).join('\n')
-    : '❌ None currently';
-
-  const outOfStockList = outOfStock.length > 0
-    ? outOfStock.map(c => `🔴 ${c.label}`).join('\n')
-    : '✅ All colors available!';
-
-  await sendDiscordNotification(
-    '📊 Complete Inventory Snapshot',
-    'Current status of all Bird Head Toque colors',
-    3447003,
-    [
-      { name: `🟢 In Stock (${inStock.length})`, value: inStockList.substring(0, 1024), inline: false },
-      { name: `⭕ Out of Stock (${outOfStock.length})`, value: outOfStockList.substring(0, 1024), inline: false },
-      { name: '🔍 Total Colors', value: `${inStock.length + outOfStock.length} variants tracked`, inline: true },
-      { name: '⏰ Last Updated', value: new Date().toLocaleString(), inline: true }
-    ]
-  );
-}
-
 // ===== STOCK CHECKING =====
 async function checkStock() {
   checkCount++;
-  monitorStats.totalChecks++;
   
-  console.log(`\n${'═'.repeat(50)}`);
+  console.log(`\n${'─'.repeat(50)}`);
   console.log(`🔍 Check #${checkCount} - ${new Date().toLocaleString()}`);
-  console.log('═'.repeat(50));
+  console.log('─'.repeat(50));
   
   try {
-    // Fetch page
     const response = await axios.get(CONFIG.PRODUCT_URL, {
       headers: {
         'User-Agent': CONFIG.USER_AGENT,
@@ -125,144 +94,68 @@ async function checkStock() {
       throw new Error('Product data not found');
     }
     
-    // Get color options
-    const colorOptions = product.colourOptions?.options || [];
-    
-    // Get variants with stock status
     const variants = product.variants || [];
     
-    console.log(`📦 Product: ${product.name || 'Bird Head Toque'}`);
-    console.log(`🎨 Colors: ${colorOptions.length}`);
-    console.log(`📊 Variants: ${variants.length}`);
+    // Build current stock status for tracked colors only
+    const currentStockStatus = new Map();
+    const newlyInStock = [];
     
-    // Build stock map from variants
-    // variants array has: { colourId, stockStatus: "InStock" | "OutOfStock" }
-    const stockMap = new Map();
     variants.forEach(v => {
-      stockMap.set(v.colourId, v.stockStatus);
-    });
-    
-    // Categorize colors
-    const currentStock = { inStock: [], outOfStock: [] };
-    
-    colorOptions.forEach(color => {
-      const colorId = color.value;
-      const stockStatus = stockMap.get(colorId);
+      const colorId = v.colourId;
       
-      const colorInfo = {
-        colorId,
-        label: color.label,
-        primaryColour: color.primaryColour,
-        hexCode: color.hexCode
-      };
+      // Only process colors we care about
+      if (!TRACKED_COLOR_IDS.has(colorId)) return;
       
+      const stockStatus = v.stockStatus;
+      currentStockStatus.set(colorId, stockStatus);
+      
+      // Find label
+      const colorInfo = TRACKED_COLORS.find(c => c.colorId === colorId);
+      const label = colorInfo?.label || colorId;
+      
+      // Log status
       if (stockStatus === 'InStock') {
-        currentStock.inStock.push(colorInfo);
-        console.log(`  ✅ ${color.label} - IN STOCK`);
+        console.log(`  ✅ ${label} - IN STOCK`);
       } else {
-        currentStock.outOfStock.push(colorInfo);
-        console.log(`  ❌ ${color.label} - Out of Stock`);
+        console.log(`  ❌ ${label} - Out of Stock`);
+      }
+      
+      // Check if this is a restock (was OOS, now in stock)
+      const previousStatus = previousStockStatus.get(colorId);
+      if (previousStatus === 'OutOfStock' && stockStatus === 'InStock') {
+        newlyInStock.push({ colorId, label });
       }
     });
     
-    // Summary
-    console.log(`\n📊 Summary: ${currentStock.inStock.length} in stock, ${currentStock.outOfStock.length} out of stock`);
-    
-    // Detect restocks (skip first run)
-    if (previousStock.outOfStock.length > 0 || previousStock.inStock.length > 0) {
-      const newlyAvailable = currentStock.inStock.filter(color =>
-        previousStock.outOfStock.some(prev => prev.colorId === color.colorId)
-      );
-      
-      if (newlyAvailable.length > 0) {
-        console.log(`\n🎉🎉🎉 RESTOCK DETECTED! 🎉🎉🎉`);
-        newlyAvailable.forEach(c => console.log(`  🔥 ${c.label}`));
-        monitorStats.totalRestocks += newlyAvailable.length;
-        await sendRestockAlert(newlyAvailable);
-      }
+    // Send alert if any tracked colors just restocked
+    if (newlyInStock.length > 0) {
+      console.log(`\n🎉🎉🎉 RESTOCK DETECTED! 🎉🎉🎉`);
+      newlyInStock.forEach(c => console.log(`  🔥 ${c.label}`));
+      await sendRestockAlert(newlyInStock);
+    } else {
+      console.log(`\n✓ No restocks detected`);
     }
     
-    // Periodic snapshot every hour (12 checks at 5 min interval)
-    if (checkCount % 12 === 0) {
-      console.log('\n📊 Sending hourly snapshot...');
-      await sendInventorySnapshot(currentStock.inStock, currentStock.outOfStock);
-    }
+    // Update state
+    previousStockStatus = currentStockStatus;
     
-    previousStock = currentStock;
     console.log(`\n⏰ Next check in ${CONFIG.CHECK_INTERVAL} minutes`);
     
   } catch (error) {
     console.error(`\n❌ Error: ${error.message}`);
-    monitorStats.errors++;
-    
-    await sendDiscordNotification(
-      '⚠️ Monitor Error',
-      `Error: ${error.message}`,
-      15158332,
-      [{ name: 'Time', value: new Date().toLocaleString(), inline: false }]
-    );
-  }
-}
-
-// ===== DISCORD BOT (optional) =====
-async function setupDiscordBot() {
-  if (!CONFIG.DISCORD_BOT_TOKEN || !CONFIG.ENABLE_COMMANDS) {
-    console.log('ℹ️  Discord commands disabled');
-    return;
-  }
-  
-  try {
-    const { Client, GatewayIntentBits } = require('discord.js');
-    const client = new Client({
-      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
-    });
-    
-    client.on('ready', () => console.log(`✅ Bot: ${client.user.tag}`));
-    
-    client.on('messageCreate', async (message) => {
-      if (message.author.bot || !message.content.startsWith('!')) return;
-      if (CONFIG.DISCORD_CHANNEL_ID && message.channel.id !== CONFIG.DISCORD_CHANNEL_ID) return;
-      
-      const cmd = message.content.toLowerCase().trim();
-      
-      if (cmd === '!status') {
-        const uptime = Math.floor((Date.now() - monitorStats.startTime) / 1000 / 60);
-        await sendDiscordNotification('📊 Status', 'Running', 5814783, [
-          { name: 'Uptime', value: `${Math.floor(uptime/60)}h ${uptime%60}m`, inline: true },
-          { name: 'Checks', value: `${monitorStats.totalChecks}`, inline: true },
-          { name: 'Restocks', value: `${monitorStats.totalRestocks}`, inline: true }
-        ]);
-      } else if (cmd === '!list' || cmd === '!snapshot') {
-        await sendInventorySnapshot(previousStock.inStock, previousStock.outOfStock);
-      } else if (cmd === '!check') {
-        await sendDiscordNotification('🔄 Manual Check', 'Running...', 5814783, []);
-        await checkStock();
-      } else if (cmd === '!help') {
-        await sendDiscordNotification('💡 Commands', '', 5814783, [
-          { name: '!status', value: 'Monitor status', inline: false },
-          { name: '!list', value: 'Current stock', inline: false },
-          { name: '!check', value: 'Force check', inline: false }
-        ]);
-      }
-    });
-    
-    await client.login(CONFIG.DISCORD_BOT_TOKEN);
-  } catch (error) {
-    console.error('Bot error:', error.message);
   }
 }
 
 // ===== MAIN =====
 async function main() {
   console.log('\n' + '═'.repeat(50));
-  console.log("🏔️  ARC'TERYX STOCK MONITOR - BIRD HEAD TOQUE");
+  console.log("🏔️  ARC'TERYX BIRD HEAD TOQUE MONITOR");
   console.log('═'.repeat(50));
-  console.log(`📍 URL: ${CONFIG.PRODUCT_URL}`);
-  console.log(`⏰ Interval: ${CONFIG.CHECK_INTERVAL} min`);
-  console.log(`🔔 Webhook: ${CONFIG.DISCORD_WEBHOOK_URL !== 'YOUR_DISCORD_WEBHOOK_URL_HERE' ? '✅' : '❌'}`);
-  console.log('═'.repeat(50) + '\n');
-  
-  await setupDiscordBot();
+  console.log(`⏰ Checking every ${CONFIG.CHECK_INTERVAL} minutes`);
+  console.log(`🎨 Tracking ${TRACKED_COLORS.length} colors:`);
+  TRACKED_COLORS.forEach(c => console.log(`   • ${c.label}`));
+  console.log(`🔔 Webhook: ${CONFIG.DISCORD_WEBHOOK_URL !== 'YOUR_DISCORD_WEBHOOK_URL_HERE' ? '✅ Configured' : '❌ Not set'}`);
+  console.log('═'.repeat(50));
   
   // Initial check
   await checkStock();
@@ -272,19 +165,6 @@ async function main() {
   
   console.log('\n✅ Monitor running. Ctrl+C to stop.\n');
 }
-
-// Shutdown handlers
-process.on('SIGTERM', async () => {
-  console.log('\n⚠️ Shutting down...');
-  await sendDiscordNotification('🔴 Monitor Stopped', 'Shutdown signal', 15158332, []);
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('\n⚠️ Shutting down...');
-  await sendDiscordNotification('🔴 Monitor Stopped', 'Manual shutdown', 15158332, []);
-  process.exit(0);
-});
 
 main().catch(err => {
   console.error('Fatal:', err);
